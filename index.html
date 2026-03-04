@@ -396,8 +396,27 @@
                 original.classList.add('opacity-50'); updateGhostPos(e);
             }, delay);
         }
-        function handleGlobalMouseMove(e) { if (isDragging) { e.preventDefault(); updateGhostPos(e); } }
-        function handleGlobalMouseUp(e) { if (isDragging) { const dropEl = document.elementFromPoint(e.clientX, e.clientY); const slot = dropEl ? dropEl.closest('.calendar-slot') : null; if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index)); cancelDrag(); } else if (isSelecting) finishSelection(); }
+        function handleGlobalMouseMove(e) { 
+            if (isDragging) { e.preventDefault(); updateGhostPos(e); return; }
+            if (isSelecting) {
+                const x = e.clientX, y = e.clientY;
+                const el = document.elementFromPoint(x, y);
+                const slot = el ? el.closest('.calendar-slot') : null;
+                if (slot && slot.dataset.date === selectionStart.date) {
+                    updateSelection(slot.dataset.date, parseInt(slot.dataset.index));
+                }
+            }
+        }
+        function handleGlobalMouseUp(e) { 
+            if (isDragging) { 
+                const dropEl = document.elementFromPoint(e.clientX, e.clientY); 
+                const slot = dropEl ? dropEl.closest('.calendar-slot') : null; 
+                if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index)); 
+                cancelDrag(); 
+            } else if (isSelecting) {
+                finishSelection();
+            }
+        }
         function updateGhostPos(e) { const x = e.type.includes('touch') ? e.touches[0].clientX : e.clientX, y = e.type.includes('touch') ? e.touches[0].clientY : e.clientY; dragGhost.style.left = (x - dragGhost.offsetWidth / 2) + 'px'; dragGhost.style.top = (y - 10) + 'px'; }
         
         async function finishDrag(newDate, newIdx) {
