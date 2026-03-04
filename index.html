@@ -375,7 +375,7 @@
 
         function updateSelection(date, idx) { 
             if(!isSelecting || date !== selectionStart.date) return; 
-            selectionEnd = { date, idx }; 
+            selectionEnd = { date, index: idx }; 
             drawSelection(); 
         }
 
