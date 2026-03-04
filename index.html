@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pickleball TSV Stöckelsberg</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root { --primary: #22c55e; --bg: #f8fafc; }
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            background-color: var(--bg); 
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: contain;
+        }
+        .calendar-card { background: white; border-radius: 1rem; box-shadow: 0 4px 20px rgba(0,0,0,0.05); }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .day-column {
+            width: calc((100vw - 48px) / 2);
+            min-width: calc((100vw - 48px) / 2);
+            scroll-snap-align: start;
+        }
+        @media (min-width: 768px) {
+            .day-column { width: auto; min-width: 0; flex: 1; scroll-snap-align: none; }
+        }
+
+        #calendarScrollContainer { 
+            scroll-snap-type: x mandatory; 
+            scroll-behavior: smooth; 
+            -webkit-overflow-scrolling: touch;
+            scroll-padding-left: 48px; 
+        }
+        @media (min-width: 768px) { #calendarScrollContainer { scroll-snap-type: none; scroll-padding-left: 0; } }
+
+        .booking-card { transition: transform 0.1s, opacity 0.1s; border-bottom: 3px solid rgba(0,0,0,0.15); cursor: grab; }
+        .booking-card.dragging { opacity: 0.5; transform: scale(0.95); pointer-events: none; }
+        .selection-glow { background: rgba(34, 197, 94, 0.2); border: 2px solid var(--primary); border-radius: 8px; z-index: 5; pointer-events: none; }
+        .selection-glow.conflict { background: rgba(239, 68, 68, 0.2); border-color: #ef4444; animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+
+        .past-slot { background-color: #f1f5f9; opacity: 0.6; pointer-events: none; }
+        .past-booking { filter: grayscale(0.8); opacity: 0.7; }
+        
+        .now-line {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #ef4444;
+            z-index: 40;
+            pointer-events: none;
+        }
+        .now-line::before {
+            content: '';
+            position: absolute;
+            left: -4px;
+            top: -3px;
+            width: 8px;
+            height: 8px;
+            background: #ef4444;
+            border-radius: 50%;
+        }
+
+        #dragGhost { position: fixed; pointer-events: none; z-index: 1000; display: none; }
+    </style>
+</head>
+<body class="text-slate-900 h-screen flex flex-col overflow-hidden">
+
+    <header class="bg-white border-b-2 border-slate-100 sticky top-0 z-50 px-4 py-4 shadow-sm">
+        <div class="max-w-7xl mx-auto flex justify-between items-center text-slate-800">
+            <div class="flex items-center gap-3">
+                <img src="TSV.png" alt="Logo" class="h-10 w-auto">
+                <div class="leading-tight">
+                    <h1 class="text-sm font-black uppercase tracking-tight text-slate-900">TSV Stöckelsberg</h1>
+                    <div class="flex items-center gap-2">
+                        <p class="text-[10px] font-bold text-green-600 uppercase">Pickleball</p>
+                        <span id="occupancyBadge" class="text-[9px] font-black bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 border border-slate-200 uppercase">Woche: --%</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-1 sm:gap-2 bg-slate-100 p-1 rounded-2xl border border-slate-200">
+                <button onclick="changeWeek(-1)" class="flex items-center gap-1 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-xl shadow-sm border border-slate-200 font-bold active:scale-90 transition-all">
+                    <i class="ph-bold ph-caret-left"></i>
+                </button>
+                <button onclick="goToToday()" class="px-3 py-2 text-[10px] font-black bg-slate-900 text-white rounded-xl uppercase active:scale-90">Heute</button>
+                <button onclick="changeWeek(1)" class="flex items-center gap-1 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-xl shadow-sm border border-slate-200 font-bold active:scale-90 transition-all">
+                    <i class="ph-bold ph-caret-right"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-hidden p-2 sm:p-4 flex flex-col max-w-7xl mx-auto w-full text-slate-800">
+        <div class="calendar-card flex-1 flex flex-col overflow-hidden border border-slate-200 bg-white">
+            <div class="flex border-b border-slate-200 bg-slate-50 sticky top-0 z-30 h-14 overflow-hidden">
+                <div class="w-[48px] shrink-0 border-r border-slate-200 bg-slate-50 sticky left-0 z-40"></div> 
+                <div id="daysHeader" class="flex flex-1 overflow-hidden"></div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto overflow-x-auto hide-scrollbar relative select-none" id="calendarScrollContainer" onscroll="syncHeader(this)">
+                <div class="flex relative pb-20" id="calendarGridBase" style="width: max-content; min-width: 100%;">
+                    <div class="w-[48px] shrink-0 border-r border-slate-200 bg-white sticky left-0 z-20 flex flex-col pt-4 shadow-[2px_0_5px_rgba(0,0,0,0.02)]" id="timeLabels"></div>
+                    <div id="gridColumns" class="flex flex-1 pt-4"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="dragGhost" class="rounded-xl p-2 text-white shadow-2xl opacity-80"></div>
+
+    <!-- Modals -->
+    <div id="bookingModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] hidden flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="bg-white rounded-t-[2rem] sm:rounded-3xl shadow-2xl w-full max-w-md p-8 transform transition-all border-t sm:border border-slate-100">
+            <h2 id="bookingModalTitle" class="text-2xl font-black mb-1 text-slate-900">Platz buchen</h2>
+            <p id="modalSubTitle" class="text-sm text-slate-500 mb-6 font-bold"></p>
+            <form id="bookingForm" onsubmit="saveBooking(event)" class="space-y-5">
+                <input type="hidden" id="editBookingId">
+                <input type="hidden" id="bookingDate"><input type="hidden" id="startTime"><input type="hidden" id="endTime">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Dein Vorname</label>
+                    <input type="text" id="playerName" required placeholder="z.B. Stefan" class="w-full px-4 py-4 bg-slate-50 border-2 border-transparent focus:border-green-500 focus:bg-white rounded-2xl outline-none transition-all font-bold text-lg text-slate-800">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Kommentar</label>
+                        <input type="text" id="bookingComment" placeholder="..." class="w-full px-4 py-4 bg-slate-50 border-2 border-transparent focus:border-green-500 focus:bg-white rounded-2xl outline-none transition-all text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">PIN (optional)</label>
+                        <input type="text" id="bookingPin" maxlength="4" placeholder="1234" class="w-full px-4 py-4 bg-slate-50 border-2 border-transparent focus:border-green-500 focus:bg-white rounded-2xl outline-none transition-all text-slate-700 font-mono">
+                    </div>
+                </div>
+                <label class="flex items-center gap-3 bg-slate-50 p-4 rounded-2xl cursor-pointer">
+                    <input type="checkbox" id="isPermanent" class="w-6 h-6 rounded border-slate-300 text-blue-600">
+                    <span class="text-sm font-black text-slate-700">Wöchentlich wiederholen</span>
+                </label>
+                <div id="errorMsg" class="hidden text-red-600 text-xs font-bold p-3 bg-red-50 rounded-lg text-center"></div>
+                <button type="submit" class="w-full bg-slate-900 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 transition-all uppercase">Speichern</button>
+                <button type="button" onclick="closeModal()" class="w-full text-slate-400 font-bold py-2 text-sm uppercase">Abbrechen</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="detailsModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] hidden flex items-end sm:items-center justify-center p-0 sm:p-4 text-slate-800">
+        <div class="bg-white rounded-t-[2rem] sm:rounded-3xl shadow-2xl w-full max-w-sm p-8 border-t sm:border border-slate-100 text-center sm:text-left">
+            <h2 class="text-xl font-black mb-6">Buchungsinfo</h2>
+            <div class="space-y-4 mb-8">
+                <div class="bg-slate-50 p-5 rounded-2xl text-left">
+                    <p class="text-[10px] font-black text-slate-400 uppercase mb-1 text-left">Spieler</p>
+                    <p id="detailName" class="font-black text-slate-900 text-xl"></p>
+                </div>
+                <div class="bg-slate-50 p-5 rounded-2xl text-left">
+                    <p class="text-[10px] font-black text-slate-400 uppercase mb-1 text-left">Zeitraum</p>
+                    <p id="detailTime" class="font-black text-slate-900 text-lg"></p>
+                    <p id="detailDate" class="text-xs text-slate-500 font-bold uppercase mt-1"></p>
+                </div>
+                <div id="detailCommentContainer" class="bg-slate-50 p-5 rounded-2xl text-left hidden">
+                    <p class="text-[10px] font-black text-slate-400 uppercase mb-1">Notiz</p>
+                    <p id="detailComment" class="text-sm font-medium"></p>
+                </div>
+                <button onclick="downloadICal()" class="w-full flex items-center justify-center gap-2 bg-blue-50 text-blue-600 font-black py-3 rounded-xl border border-blue-100 active:scale-95 text-xs uppercase">
+                    <i class="ph-bold ph-calendar-plus"></i> In Kalender speichern
+                </button>
+            </div>
+            
+            <div id="pinVerificationSection" class="hidden mb-4">
+                <input type="text" id="verifyPin" maxlength="4" placeholder="PIN eingeben" class="w-full px-4 py-4 bg-slate-50 border-2 border-red-200 rounded-2xl outline-none transition-all font-mono text-center mb-2">
+                <p class="text-[10px] text-red-500 font-bold uppercase mb-4">PIN erforderlich für Änderungen</p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+                <button onclick="handleEdit()" class="bg-slate-100 text-slate-700 font-black py-4 rounded-xl border border-slate-200 active:scale-95 text-xs uppercase">Bearbeiten</button>
+                <button onclick="handleDelete()" class="bg-red-50 text-red-600 font-black py-4 rounded-xl border border-red-100 active:scale-95 text-xs uppercase">Löschen</button>
+            </div>
+            <button onclick="closeDetailsModal()" class="w-full text-slate-400 font-bold py-4 text-sm uppercase mt-2">Schließen</button>
+        </div>
+    </div>
+
+    <script>
+        const SUPABASE_URL = 'https://sawdwcfaiffvhtvfuotz.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_nr2pQCbLb07RkrgJl1Xlag_nf-F_d_U';
+        const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const START_HOUR = 8, END_HOUR = 22, SLOT_H = 45, HOUR_H = 90;
+        let currentDate = new Date(), bookings = [], curBookingId = null;
+        let isSelecting = false, selectionStart = null, selectionEnd = null;
+        let isDragging = false, draggedId = null, dragGhost = null;
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            renderTimeLabels();
+            await fetchBookings();
+            renderCalendar(true); 
+            setInterval(updateNowLine, 60000);
+            window.addEventListener('mouseup', handleGlobalMouseUp);
+            window.addEventListener('mousemove', handleGlobalMouseMove);
+            window.addEventListener('touchend', handleTouchEnd);
+            window.addEventListener('touchmove', handleTouchMove, { passive: false });
+        });
+
+        function syncHeader(el) { document.getElementById('daysHeader').scrollLeft = el.scrollLeft; }
+
+        async function fetchBookings() {
+            const { data, error } = await sb.from('bookings').select('*');
+            bookings = data || [];
+            updateOccupancy();
+        }
+
+        function renderTimeLabels() {
+            let html = '';
+            for (let i = START_HOUR; i <= END_HOUR; i++) {
+                html += `<div style="height:${HOUR_H}px" class="relative border-t border-slate-200 flex justify-center items-start bg-white">
+                            <span class="absolute -top-2.5 text-[10px] font-black text-slate-400 bg-white px-1 tabular-nums">${i}:00</span>
+                         </div>`;
+            }
+            document.getElementById('timeLabels').innerHTML = html;
+        }
+
+        function getLocalDateStr(date) { return date.toLocaleDateString('sv-SE'); }
+
+        function renderCalendar(shouldScroll = false) {
+            const start = new Date(currentDate);
+            const day = start.getDay() || 7;
+            start.setDate(start.getDate() - (day - 1));
+            start.setHours(0,0,0,0);
+
+            let headerHtml = '', gridHtml = '';
+            const dayNames = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+            const now = new Date();
+            const todayStr = getLocalDateStr(now);
+
+            for (let i = 0; i < 7; i++) {
+                const d = new Date(start); d.setDate(start.getDate() + i);
+                const dStr = getLocalDateStr(d);
+                const isToday = dStr === todayStr;
+                const formattedDate = `${d.getDate()}.${d.getMonth() + 1}.`;
+
+                headerHtml += `<div class="day-column flex flex-col items-center justify-center border-r border-slate-200 last:border-0 ${isToday?'bg-green-50 is-today':'bg-slate-50'}">
+                    <span class="text-[10px] font-black uppercase tracking-widest ${isToday?'text-green-600':'text-slate-400'}">${dayNames[i]} ${formattedDate}</span>
+                </div>`;
+
+                let slots = '';
+                for (let s = 0; s < (END_HOUR - START_HOUR) * 2; s++) {
+                    const isFullHour = s % 2 === 0;
+                    const slotTime = new Date(d);
+                    slotTime.setHours(START_HOUR + Math.floor(s/2), (s%2)*30, 0, 0);
+                    const isPast = slotTime < now;
+
+                    slots += `<div class="calendar-slot border-b ${isFullHour?'border-t border-slate-200':'border-slate-100'} slot-hover ${isPast?'past-slot':''}" 
+                        style="height:${SLOT_H}px" data-date="${dStr}" data-index="${s}"
+                        onmousedown="handleMouseDownOnSlot(event)" 
+                        onmouseenter="updateSelection('${dStr}',${s})"
+                        ontouchstart="handleTouchStart(event)"></div>`;
+                }
+
+                gridHtml += `<div class="day-column border-r border-slate-200 last:border-0 relative ${isToday?'bg-green-50/10 is-today':''}">
+                    ${isToday ? '<div id="nowLine" class="now-line"></div>' : ''}
+                    ${slots}
+                    <div class="absolute inset-0 pointer-events-none" id="bookings-${dStr}">${renderBookings(dStr)}</div>
+                    <div class="absolute inset-0 pointer-events-none hidden selection-glow" id="selection-${dStr}"></div>
+                </div>`;
+            }
+            document.getElementById('daysHeader').innerHTML = headerHtml;
+            document.getElementById('gridColumns').innerHTML = gridHtml;
+            updateNowLine();
+
+            if (shouldScroll) {
+                setTimeout(() => {
+                    const todayEl = document.querySelector('.is-today');
+                    if (todayEl) {
+                        const container = document.getElementById('calendarScrollContainer');
+                        container.scrollLeft = todayEl.offsetLeft - 48;
+                    }
+                }, 150);
+            }
+        }
+
+        function updateNowLine() {
+            const line = document.getElementById('nowLine');
+            if (!line) return;
+            const now = new Date();
+            if (now.getHours() < START_HOUR || now.getHours() >= END_HOUR) { line.style.display = 'none'; return; }
+            line.style.display = 'block';
+            line.style.top = timeToPos(`${now.getHours()}:${now.getMinutes()}`) + 'px';
+        }
+
+        function updateOccupancy() {
+            const totalSlots = 7 * (END_HOUR - START_HOUR) * 2;
+            let bookedSlots = 0;
+            const start = new Date(currentDate);
+            const day = start.getDay() || 7;
+            start.setDate(start.getDate() - (day - 1));
+            start.setHours(0,0,0,0);
+            const end = new Date(start); end.setDate(end.getDate() + 7);
+
+            bookings.forEach(b => {
+                const bDate = new Date(b.date);
+                if ((bDate >= start && bDate < end) || b.is_permanent) {
+                    const duration = (timeToPos(b.endTime) - timeToPos(b.startTime)) / SLOT_H;
+                    bookedSlots += duration;
+                }
+            });
+            const percent = Math.min(100, Math.round((bookedSlots / totalSlots) * 100));
+            document.getElementById('occupancyBadge').innerText = `Woche: ${percent}%`;
+        }
+
+        function renderBookings(dStr) {
+            const dayIdx = new Date(dStr).getDay();
+            const now = new Date();
+            return bookings.filter(b => b.date === dStr || (b.is_permanent && new Date(b.date).getDay() === dayIdx)).map(b => {
+                const top = timeToPos(b.startTime), height = timeToPos(b.endTime) - top;
+                const bEnd = new Date(dStr);
+                const [h,m] = b.endTime.split(':').map(Number);
+                bEnd.setHours(h,m,0,0);
+                const isPast = bEnd < now;
+
+                return `<div onmousedown="initDrag(event, '${b.id}')" ontouchstart="initDrag(event, '${b.id}')"
+                         onclick="openDetails('${b.id}',event)" 
+                         class="absolute left-1 right-1 rounded-xl p-2 text-white shadow-md cursor-pointer pointer-events-auto booking-card 
+                         ${isPast ? 'past-booking' : ''}
+                         ${b.is_permanent?'bg-gradient-to-br from-blue-600 to-blue-700':'bg-gradient-to-br from-green-500 to-green-600'}"
+                         style="top:${top}px;height:${height-2}px" id="booking-${b.id}">
+                    <div class="flex justify-between items-start">
+                        <p class="text-[8px] font-black uppercase opacity-80 leading-none">${b.startTime}-${b.endTime}</p>
+                        ${b.pin ? '<i class="ph-bold ph-lock-key text-[8px] opacity-60"></i>' : ''}
+                    </div>
+                    <p class="text-xs font-black truncate mt-0.5">${b.name}</p>
+                </div>`;
+            }).join('');
+        }
+
+        function timeToPos(t) { const [h,m] = t.split(':').map(Number); return ((h-START_HOUR)*60+m)*HOUR_H/60; }
+        function idxToTime(i) { const h = START_HOUR+Math.floor(i/2), m = (i%2)*30; return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`; }
+
+        function drawSelection() { 
+            document.querySelectorAll('.selection-glow').forEach(el=>el.classList.add('hidden'));
+            const el = document.getElementById(`selection-${selectionStart.date}`);
+            if (!el) return;
+            const s = Math.min(selectionStart.index, selectionEnd.index), e = Math.max(selectionStart.index, selectionEnd.index) + 1;
+            const sTime = idxToTime(s), eTime = idxToTime(e);
+            
+            const hasConflict = bookings.some(b => 
+                (b.date === selectionStart.date || (b.is_permanent && new Date(b.date).getDay() === new Date(selectionStart.date).getDay())) && 
+                (sTime < b.endTime && eTime > b.startTime)
+            );
+
+            el.style.top = (s * SLOT_H) + 'px'; el.style.height = ((e - s) * SLOT_H) + 'px'; 
+            el.classList.remove('hidden');
+            el.classList.toggle('conflict', hasConflict);
+        }
+
+        function handleMouseDownOnSlot(e) { if (e.button !== 0) return; isSelecting = true; const el = e.target; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }
+        function updateSelection(date, idx) { if(!isSelecting||date!==selectionStart.date)return; selectionEnd={date,idx}; drawSelection(); }
+        function finishSelection() { if(!isSelecting)return; isSelecting=false; const s=Math.min(selectionStart.index,selectionEnd.index), e=Math.max(selectionStart.index,selectionEnd.index)+1; openModal(selectionStart.date,idxToTime(s),idxToTime(e)); }
+
+        function handleTouchStart(e) { 
+            const t = e.touches[0]; tStartPos = { x: t.clientX, y: t.clientY };
+            const el = document.elementFromPoint(t.clientX, t.clientY); 
+            if (el && el.dataset.date && !isDragging) tTimer = setTimeout(() => { if (window.navigator.vibrate) window.navigator.vibrate(20); isSelecting = true; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }, 300);
+        }
+        function handleTouchMove(e) { 
+            if (isDragging) { updateGhostPos(e); return; }
+            if (!isSelecting) { if (tStartPos && Math.hypot(e.touches[0].clientX - tStartPos.x, e.touches[0].clientY - tStartPos.y) > 15) clearTimeout(tTimer); return; }
+            e.preventDefault(); const t = e.touches[0], el = document.elementFromPoint(t.clientX, t.clientY); 
+            if (el && el.dataset.date) updateSelection(el.dataset.date, parseInt(el.dataset.index));
+        }
+        function handleTouchEnd(e) { 
+            clearTimeout(tTimer); 
+            if (isDragging) {
+                const t = e.changedTouches[0]; const dropEl = document.elementFromPoint(t.clientX, t.clientY);
+                const slot = dropEl ? dropEl.closest('.calendar-slot') : null;
+                if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index));
+                cancelDrag();
+            } else if (isSelecting) finishSelection();
+        }
+
+        function initDrag(e, id) {
+            if (e.type === 'mousedown' && e.button !== 0) return; e.stopPropagation(); draggedId = id; const original = document.getElementById(`booking-${id}`);
+            const delay = e.type === 'touchstart' ? 300 : 0;
+            tTimer = setTimeout(() => {
+                isDragging = true; if (window.navigator.vibrate) window.navigator.vibrate(20);
+                dragGhost = document.getElementById('dragGhost'); dragGhost.innerHTML = original.innerHTML;
+                dragGhost.className = original.className + " dragging"; dragGhost.style.width = original.offsetWidth + "px";
+                dragGhost.style.height = original.offsetHeight + "px"; dragGhost.style.display = 'block';
+                original.classList.add('opacity-50'); updateGhostPos(e);
+            }, delay);
+        }
+        function handleGlobalMouseMove(e) { if (isDragging) { e.preventDefault(); updateGhostPos(e); } }
+        function handleGlobalMouseUp(e) { if (isDragging) { const dropEl = document.elementFromPoint(e.clientX, e.clientY); const slot = dropEl ? dropEl.closest('.calendar-slot') : null; if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index)); cancelDrag(); } else if (isSelecting) finishSelection(); }
+        function updateGhostPos(e) { const x = e.type.includes('touch') ? e.touches[0].clientX : e.clientX, y = e.type.includes('touch') ? e.touches[0].clientY : e.clientY; dragGhost.style.left = (x - dragGhost.offsetWidth / 2) + 'px'; dragGhost.style.top = (y - 10) + 'px'; }
+        
+        async function finishDrag(newDate, newIdx) {
+            const b = bookings.find(x => x.id == draggedId); if (!b) return;
+            if (b.pin) { const p = prompt("PIN eingeben zum Verschieben:"); if (p !== b.pin) { alert("Falscher PIN!"); return; } }
+            const [h1, m1] = b.startTime.split(':').map(Number), [h2, m2] = b.endTime.split(':').map(Number);
+            const duration = ((h2 * 60 + m2) - (h1 * 60 + m1)) / 30;
+            const sTime = idxToTime(newIdx), eTime = idxToTime(newIdx + duration);
+            if (b.is_permanent && !confirm("Serie verschieben?")) return;
+            const day = new Date(newDate).getDay();
+            if (bookings.some(x => x.id != b.id && (x.date === newDate || (x.is_permanent && new Date(x.date).getDay() === day)) && (sTime < x.endTime && eTime > x.startTime))) { alert("Belegt!"); return; }
+            const { error } = await sb.from('bookings').update({ date: newDate, startTime: sTime, endTime: eTime }).eq('id', b.id);
+            if (error) alert(error.message); else { await fetchBookings(); renderCalendar(); }
+        }
+        function cancelDrag() { isDragging = false; if (dragGhost) dragGhost.style.display = 'none'; if (draggedId) { const el = document.getElementById(`booking-${draggedId}`); if (el) el.classList.remove('opacity-50'); } draggedId = null; }
+
+        function openModal(d, s, e, editId = null) {
+            document.getElementById('bookingForm').reset(); document.getElementById('editBookingId').value = editId || '';
+            document.getElementById('bookingDate').value = d; document.getElementById('startTime').value = s; document.getElementById('endTime').value = e;
+            const dobj = new Date(d); document.getElementById('modalSubTitle').innerText = `${dobj.getDate()}.${dobj.getMonth()+1}. von ${s} bis ${e} Uhr`;
+            document.getElementById('bookingModalTitle').innerText = editId ? "Termin bearbeiten" : "Platz buchen";
+            document.getElementById('bookingModal').classList.remove('hidden'); setTimeout(() => document.getElementById('playerName').focus(), 100);
+        }
+        function closeModal() { document.getElementById('bookingModal').classList.add('hidden'); document.querySelectorAll('.selection-glow').forEach(el=>el.classList.add('hidden')); }
+        function goToToday() { currentDate = new Date(); renderCalendar(true); }
+        function changeWeek(o) { currentDate.setDate(currentDate.getDate() + (o*7)); renderCalendar(); }
+
+        async function saveBooking(e) {
+            e.preventDefault(); 
+            const editId = document.getElementById('editBookingId').value, d = document.getElementById('bookingDate').value, n = document.getElementById('playerName').value, c = document.getElementById('bookingComment').value, pin = document.getElementById('bookingPin').value, s = document.getElementById('startTime').value, en = document.getElementById('endTime').value, p = document.getElementById('isPermanent').checked;
+            const day = new Date(d).getDay(); 
+            if (bookings.some(b => b.id != editId && (b.date === d || (b.is_permanent && new Date(b.date).getDay() === day)) && (s < b.endTime && en > b.startTime))) { document.getElementById('errorMsg').innerText = "Belegt!"; document.getElementById('errorMsg').classList.remove('hidden'); return; }
+            let res = (editId && editId !== '') ? await sb.from('bookings').update({ name: n, comment: c, pin: pin, is_permanent: p }).eq('id', editId) : await sb.from('bookings').insert([{ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }]);
+            if (res.error) alert(res.error.message); else { await fetchBookings(); renderCalendar(); closeModal(); }
+        }
+
+        function openDetails(id,e) { 
+            e.stopPropagation(); curBookingId = id; const b = bookings.find(x => x.id == id); if (!b) return; 
+            document.getElementById('detailName').innerText = b.name; 
+            document.getElementById('detailTime').innerText = `${b.startTime}-${b.endTime} Uhr`; 
+            document.getElementById('detailDate').innerText = b.is_permanent ? 'Wöchentlicher Dauertermin' : b.date; 
+            const cont = document.getElementById('detailCommentContainer'); 
+            if (b.comment) { document.getElementById('detailComment').innerText = b.comment; cont.classList.remove('hidden'); } else cont.classList.add('hidden'); 
+            document.getElementById('pinVerificationSection').classList.toggle('hidden', !b.pin);
+            document.getElementById('verifyPin').value = '';
+            document.getElementById('detailsModal').classList.remove('hidden'); 
+        }
+        function closeDetailsModal() { document.getElementById('detailsModal').classList.add('hidden'); }
+
+        function handleEdit() {
+            const b = bookings.find(x => x.id == curBookingId);
+            if (b.pin && document.getElementById('verifyPin').value !== b.pin) { alert("PIN falsch!"); return; }
+            closeDetailsModal(); 
+            setTimeout(() => { 
+                openModal(b.date, b.startTime, b.endTime, b.id); 
+                document.getElementById('playerName').value = b.name; 
+                document.getElementById('bookingComment').value = b.comment || ''; 
+                document.getElementById('bookingPin').value = b.pin || '';
+                document.getElementById('isPermanent').checked = !!b.is_permanent; 
+            }, 150);
+        }
+
+        async function handleDelete() {
+            const b = bookings.find(x => x.id == curBookingId);
+            if (b.pin && document.getElementById('verifyPin').value !== b.pin) { alert("PIN falsch!"); return; }
+            if (confirm("Löschen?")) { 
+                const { error } = await sb.from('bookings').delete().eq('id', curBookingId); 
+                if (error) alert(error.message); else { await fetchBookings(); renderCalendar(); closeDetailsModal(); } 
+            } 
+        }
+
+        function downloadICal() {
+            const b = bookings.find(x => x.id == curBookingId);
+            const start = b.date.replace(/-/g, '') + 'T' + b.startTime.replace(':', '') + '00';
+            const end = b.date.replace(/-/g, '') + 'T' + b.endTime.replace(':', '') + '00';
+            const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${start}\nDTEND:${end}\nSUMMARY:Pickleball Stöckelsberg (${b.name})\nDESCRIPTION:${b.comment||''}\nEND:VEVENT\nEND:VCALENDAR`;
+            const blob = new Blob([ics], { type: 'text/calendar' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `pickleball_${b.date}.ics`; a.click();
+        }
+    </script>
+</body>
+</html>
