@@ -258,9 +258,9 @@
 
                     slots += `<div class="calendar-slot border-b ${isFullHour?'border-t border-slate-200':'border-slate-100'} slot-hover ${isPast?'past-slot':''}" 
                         style="height:${SLOT_H}px" data-date="${dStr}" data-index="${s}"
-                        onmousedown="handleMouseDownOnSlot(event)" 
+                        onmousedown="handleMouseDownOnSlot(event, ${isPast})" 
                         onmouseenter="updateSelection('${dStr}',${s})"
-                        ontouchstart="handleTouchStart(event)"></div>`;
+                        ontouchstart="handleTouchStart(event, ${isPast})"></div>`;
                 }
 
                 gridHtml += `<div class="day-column border-r border-slate-200 last:border-0 relative ${isToday?'bg-green-50/10 is-today':''}">
@@ -359,11 +359,12 @@
             el.classList.toggle('conflict', hasConflict);
         }
 
-        function handleMouseDownOnSlot(e) { if (e.button !== 0) return; isSelecting = true; const el = e.target; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }
+        function handleMouseDownOnSlot(e, isPast) { if (e.button !== 0 || isPast) return; isSelecting = true; const el = e.target; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }
         function updateSelection(date, idx) { if(!isSelecting||date!==selectionStart.date)return; selectionEnd={date,idx}; drawSelection(); }
         function finishSelection() { if(!isSelecting)return; isSelecting=false; const s=Math.min(selectionStart.index,selectionEnd.index), e=Math.max(selectionStart.index,selectionEnd.index)+1; openModal(selectionStart.date,idxToTime(s),idxToTime(e)); }
 
-        function handleTouchStart(e) { 
+        function handleTouchStart(e, isPast) { 
+            if (isPast) return;
             const t = e.touches[0]; tStartPos = { x: t.clientX, y: t.clientY };
             const el = document.elementFromPoint(t.clientX, t.clientY); 
             if (el && el.dataset.date && !isDragging) tTimer = setTimeout(() => { if (window.navigator.vibrate) window.navigator.vibrate(20); isSelecting = true; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }, 300);
