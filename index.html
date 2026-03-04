@@ -39,6 +39,10 @@
 
         .booking-card { transition: transform 0.1s, opacity 0.1s; border-bottom: 3px solid rgba(0,0,0,0.15); cursor: grab; }
         .booking-card.dragging { opacity: 0.5; transform: scale(0.95); pointer-events: none; }
+        
+        /* WICHTIG: Während der Auswahl dürfen Karten die Maus nicht blockieren */
+        body.is-selecting .booking-card { pointer-events: none !important; }
+
         .selection-glow { background: rgba(34, 197, 94, 0.2); border: 2px solid var(--primary); border-radius: 8px; z-index: 5; pointer-events: none; }
         .selection-glow.conflict { background: rgba(239, 68, 68, 0.2); border-color: #ef4444; animation: pulse 1s infinite; }
         
@@ -359,22 +363,49 @@
             el.classList.toggle('conflict', hasConflict);
         }
 
-        function handleMouseDownOnSlot(e, isPast) { if (e.button !== 0 || isPast) return; isSelecting = true; const el = e.target; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }
-        function updateSelection(date, idx) { if(!isSelecting||date!==selectionStart.date)return; selectionEnd={date,idx}; drawSelection(); }
-        function finishSelection() { if(!isSelecting)return; isSelecting=false; const s=Math.min(selectionStart.index,selectionEnd.index), e=Math.max(selectionStart.index,selectionEnd.index)+1; openModal(selectionStart.date,idxToTime(s),idxToTime(e)); }
+        function handleMouseDownOnSlot(e, isPast) { 
+            if (e.button !== 0 || isPast) return; 
+            isSelecting = true; 
+            document.body.classList.add('is-selecting');
+            const el = e.target; 
+            selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; 
+            selectionEnd = { ...selectionStart }; 
+            drawSelection(); 
+        }
+
+        function updateSelection(date, idx) { 
+            if(!isSelecting || date !== selectionStart.date) return; 
+            selectionEnd = { date, idx }; 
+            drawSelection(); 
+        }
+
+        function finishSelection() { 
+            if(!isSelecting) return; 
+            isSelecting = false; 
+            document.body.classList.remove('is-selecting');
+            const s = Math.min(selectionStart.index, selectionEnd.index), e = Math.max(selectionStart.index, selectionEnd.index) + 1; 
+            openModal(selectionStart.date, idxToTime(s), idxToTime(e)); 
+        }
 
         function handleTouchStart(e, isPast) { 
             if (isPast) return;
             const t = e.touches[0]; tStartPos = { x: t.clientX, y: t.clientY };
             const el = document.elementFromPoint(t.clientX, t.clientY); 
-            if (el && el.dataset.date && !isDragging) tTimer = setTimeout(() => { if (window.navigator.vibrate) window.navigator.vibrate(20); isSelecting = true; selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }, 300);
+            if (el && el.dataset.date && !isDragging) tTimer = setTimeout(() => { if (window.navigator.vibrate) window.navigator.vibrate(20); isSelecting = true; document.body.classList.add('is-selecting'); selectionStart = { date: el.dataset.date, index: parseInt(el.dataset.index) }; selectionEnd = { ...selectionStart }; drawSelection(); }, 300);
         }
+
         function handleTouchMove(e) { 
             if (isDragging) { updateGhostPos(e); return; }
             if (!isSelecting) { if (tStartPos && Math.hypot(e.touches[0].clientX - tStartPos.x, e.touches[0].clientY - tStartPos.y) > 15) clearTimeout(tTimer); return; }
-            e.preventDefault(); const t = e.touches[0], el = document.elementFromPoint(t.clientX, t.clientY); 
-            if (el && el.dataset.date) updateSelection(el.dataset.date, parseInt(el.dataset.index));
+            e.preventDefault(); 
+            const t = e.touches[0];
+            const el = document.elementFromPoint(t.clientX, t.clientY); 
+            const slot = el ? el.closest('.calendar-slot') : null;
+            if (slot && slot.dataset.date === selectionStart.date) {
+                updateSelection(slot.dataset.date, parseInt(slot.dataset.index));
+            }
         }
+
         function handleTouchEnd(e) { 
             clearTimeout(tTimer); 
             if (isDragging) {
@@ -396,17 +427,20 @@
                 original.classList.add('opacity-50'); updateGhostPos(e);
             }, delay);
         }
+
         function handleGlobalMouseMove(e) { 
             if (isDragging) { e.preventDefault(); updateGhostPos(e); return; }
+            // Bei der Maus-Auswahl nutzen wir die onmouseenter-Events der Slots, 
+            // aber zur Sicherheit prüfen wir hier auch den Element-Durchgriff.
             if (isSelecting) {
-                const x = e.clientX, y = e.clientY;
-                const el = document.elementFromPoint(x, y);
+                const el = document.elementFromPoint(e.clientX, e.clientY);
                 const slot = el ? el.closest('.calendar-slot') : null;
                 if (slot && slot.dataset.date === selectionStart.date) {
                     updateSelection(slot.dataset.date, parseInt(slot.dataset.index));
                 }
             }
         }
+
         function handleGlobalMouseUp(e) { 
             if (isDragging) { 
                 const dropEl = document.elementFromPoint(e.clientX, e.clientY); 
@@ -417,6 +451,7 @@
                 finishSelection();
             }
         }
+
         function updateGhostPos(e) { const x = e.type.includes('touch') ? e.touches[0].clientX : e.clientX, y = e.type.includes('touch') ? e.touches[0].clientY : e.clientY; dragGhost.style.left = (x - dragGhost.offsetWidth / 2) + 'px'; dragGhost.style.top = (y - 10) + 'px'; }
         
         async function finishDrag(newDate, newIdx) {
