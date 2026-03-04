@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Pickleball TSV Stöckelsberg</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1"></script>
     <style>
         :root { --primary: #22c55e; --bg: #f8fafc; }
         body { 
@@ -196,10 +196,13 @@
         const SUPABASE_KEY = 'sb_publishable_nr2pQCbLb07RkrgJl1Xlag_nf-F_d_U';
         const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+        function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+
         const START_HOUR = 8, END_HOUR = 22, SLOT_H = 45, HOUR_H = 90;
         let currentDate = new Date(), bookings = [], curBookingId = null;
         let isSelecting = false, selectionStart = null, selectionEnd = null;
         let isDragging = false, draggedId = null, dragGhost = null;
+        let tStartPos = null, tTimer = null, justDragged = false;
 
         document.addEventListener('DOMContentLoaded', async () => {
             renderTimeLabels();
@@ -215,8 +218,15 @@
         function syncHeader(el) { document.getElementById('daysHeader').scrollLeft = el.scrollLeft; }
 
         async function fetchBookings() {
-            const { data, error } = await sb.from('bookings').select('*');
-            bookings = data || [];
+            const { data, error } = await sb.from('bookings').select('id,name,comment,date,startTime,endTime,is_permanent,pin');
+            if (error) {
+                console.error('Fehler beim Laden:', error.message);
+                const badge = document.getElementById('occupancyBadge');
+                badge.innerText = 'Offline';
+                badge.classList.add('text-red-500');
+                return;
+            }
+            bookings = (data || []).map(b => ({ ...b, has_pin: !!b.pin }));
             updateOccupancy();
         }
 
@@ -309,7 +319,9 @@
 
             bookings.forEach(b => {
                 const bDate = new Date(b.date);
-                if ((bDate >= start && bDate < end) || b.is_permanent) {
+                const inWeek = bDate >= start && bDate < end;
+                const permanentMatchesWeek = b.is_permanent && !inWeek;
+                if (inWeek || permanentMatchesWeek) {
                     const duration = (timeToPos(b.endTime) - timeToPos(b.startTime)) / SLOT_H;
                     bookedSlots += duration;
                 }
@@ -329,16 +341,15 @@
                 const isPast = bEnd < now;
 
                 return `<div onmousedown="initDrag(event, '${b.id}')" ontouchstart="initDrag(event, '${b.id}')"
-                         onclick="openDetails('${b.id}',event)" 
                          class="absolute left-1 right-1 rounded-xl p-2 text-white shadow-md cursor-pointer pointer-events-auto booking-card 
                          ${isPast ? 'past-booking' : ''}
                          ${b.is_permanent?'bg-gradient-to-br from-blue-600 to-blue-700':'bg-gradient-to-br from-green-500 to-green-600'}"
                          style="top:${top}px;height:${height-2}px" id="booking-${b.id}">
                     <div class="flex justify-between items-start">
                         <p class="text-[8px] font-black uppercase opacity-80 leading-none">${b.startTime}-${b.endTime}</p>
-                        ${b.pin ? '<i class="ph-bold ph-lock-key text-[8px] opacity-60"></i>' : ''}
+                        ${b.has_pin ? '<i class="ph-bold ph-lock-key text-[8px] opacity-60"></i>' : ''}
                     </div>
-                    <p class="text-xs font-black truncate mt-0.5">${b.name}</p>
+                    <p class="text-xs font-black truncate mt-0.5">${esc(b.name)}</p>
                 </div>`;
             }).join('');
         }
@@ -346,21 +357,22 @@
         function timeToPos(t) { const [h,m] = t.split(':').map(Number); return ((h-START_HOUR)*60+m)*HOUR_H/60; }
         function idxToTime(i) { const h = START_HOUR+Math.floor(i/2), m = (i%2)*30; return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`; }
 
-        function drawSelection() { 
+        function drawSelection() {
             document.querySelectorAll('.selection-glow').forEach(el=>el.classList.add('hidden'));
             const el = document.getElementById(`selection-${selectionStart.date}`);
             if (!el) return;
             const s = Math.min(selectionStart.index, selectionEnd.index), e = Math.max(selectionStart.index, selectionEnd.index) + 1;
-            const sTime = idxToTime(s), eTime = idxToTime(e);
-            
-            const hasConflict = bookings.some(b => 
-                (b.date === selectionStart.date || (b.is_permanent && new Date(b.date).getDay() === new Date(selectionStart.date).getDay())) && 
-                (sTime < b.endTime && eTime > b.startTime)
-            );
+            const free = trimSelectionToFree(selectionStart.date, s, e);
 
-            el.style.top = (s * SLOT_H) + 'px'; el.style.height = ((e - s) * SLOT_H) + 'px'; 
-            el.classList.remove('hidden');
-            el.classList.toggle('conflict', hasConflict);
+            if (!free) {
+                el.style.top = (s * SLOT_H) + 'px'; el.style.height = ((e - s) * SLOT_H) + 'px';
+                el.classList.remove('hidden');
+                el.classList.add('conflict');
+                return;
+            }
+
+            el.style.top = (free.start * SLOT_H) + 'px'; el.style.height = ((free.end - free.start) * SLOT_H) + 'px';
+            el.classList.remove('hidden', 'conflict');
         }
 
         function handleMouseDownOnSlot(e, isPast) { 
@@ -379,12 +391,53 @@
             drawSelection(); 
         }
 
-        function finishSelection() { 
-            if(!isSelecting) return; 
-            isSelecting = false; 
+        function getBookingsForDate(date) {
+            const dayIdx = new Date(date).getDay();
+            return bookings.filter(b => b.date === date || (b.is_permanent && new Date(b.date).getDay() === dayIdx));
+        }
+
+        function trimSelectionToFree(date, startIdx, endIdx) {
+            const dayBookings = getBookingsForDate(date);
+            // Baue ein Belegtheits-Array für alle Slots
+            const totalSlots = (END_HOUR - START_HOUR) * 2;
+            const occupied = new Array(totalSlots).fill(false);
+            dayBookings.forEach(b => {
+                const [sh, sm] = b.startTime.split(':').map(Number);
+                const [eh, em] = b.endTime.split(':').map(Number);
+                const bStart = ((sh - START_HOUR) * 60 + sm) / 30;
+                const bEnd = ((eh - START_HOUR) * 60 + em) / 30;
+                for (let i = bStart; i < bEnd; i++) occupied[i] = true;
+            });
+
+            // Suche den längsten zusammenhängenden freien Bereich innerhalb der Auswahl
+            let bestStart = -1, bestEnd = -1, curStart = -1;
+            for (let i = startIdx; i < endIdx; i++) {
+                if (!occupied[i]) {
+                    if (curStart === -1) curStart = i;
+                } else {
+                    if (curStart !== -1 && (i - curStart) > (bestEnd - bestStart)) {
+                        bestStart = curStart; bestEnd = i;
+                    }
+                    curStart = -1;
+                }
+            }
+            if (curStart !== -1 && (endIdx - curStart) > (bestEnd - bestStart)) {
+                bestStart = curStart; bestEnd = endIdx;
+            }
+
+            if (bestStart === -1) return null; // komplett belegt
+            return { start: bestStart, end: bestEnd };
+        }
+
+        function finishSelection() {
+            if(!isSelecting) return;
+            isSelecting = false;
             document.body.classList.remove('is-selecting');
-            const s = Math.min(selectionStart.index, selectionEnd.index), e = Math.max(selectionStart.index, selectionEnd.index) + 1; 
-            openModal(selectionStart.date, idxToTime(s), idxToTime(e)); 
+            const s = Math.min(selectionStart.index, selectionEnd.index), e = Math.max(selectionStart.index, selectionEnd.index) + 1;
+            const free = trimSelectionToFree(selectionStart.date, s, e);
+            document.querySelectorAll('.selection-glow').forEach(el => el.classList.add('hidden'));
+            if (!free) return; // nichts frei → kein Modal
+            openModal(selectionStart.date, idxToTime(free.start), idxToTime(free.end));
         }
 
         function handleTouchStart(e, isPast) { 
@@ -406,32 +459,69 @@
             }
         }
 
-        function handleTouchEnd(e) { 
-            clearTimeout(tTimer); 
+        function handleTouchEnd(e) {
+            clearTimeout(tTimer);
             if (isDragging) {
                 const t = e.changedTouches[0]; const dropEl = document.elementFromPoint(t.clientX, t.clientY);
                 const slot = dropEl ? dropEl.closest('.calendar-slot') : null;
                 if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index));
                 cancelDrag();
-            } else if (isSelecting) finishSelection();
+            } else if (isSelecting) {
+                finishSelection();
+            } else if (draggedId) {
+                // Kurzer Tap auf Buchungskarte → Details öffnen
+                const id = draggedId;
+                draggedId = null;
+                openDetails(id, e);
+            }
         }
+
+        let dragPending = false, dragStartPos = null;
+        const DRAG_THRESHOLD = 8;
 
         function initDrag(e, id) {
-            if (e.type === 'mousedown' && e.button !== 0) return; e.stopPropagation(); draggedId = id; const original = document.getElementById(`booking-${id}`);
-            const delay = e.type === 'touchstart' ? 300 : 0;
-            tTimer = setTimeout(() => {
-                isDragging = true; if (window.navigator.vibrate) window.navigator.vibrate(20);
-                dragGhost = document.getElementById('dragGhost'); dragGhost.innerHTML = original.innerHTML;
-                dragGhost.className = original.className + " dragging"; dragGhost.style.width = original.offsetWidth + "px";
-                dragGhost.style.height = original.offsetHeight + "px"; dragGhost.style.display = 'block';
-                original.classList.add('opacity-50'); updateGhostPos(e);
-            }, delay);
+            if (e.type === 'mousedown' && e.button !== 0) return;
+            e.stopPropagation();
+            draggedId = id;
+            const cx = e.type === 'touchstart' ? e.touches[0].clientX : e.clientX;
+            const cy = e.type === 'touchstart' ? e.touches[0].clientY : e.clientY;
+            dragStartPos = { x: cx, y: cy };
+
+            if (e.type === 'touchstart') {
+                // Touch: Long-press startet Drag
+                tTimer = setTimeout(() => {
+                    if (window.navigator.vibrate) window.navigator.vibrate(20);
+                    activateDrag(id, e);
+                }, 300);
+            } else {
+                // Maus: Drag erst bei Bewegung (siehe handleGlobalMouseMove)
+                dragPending = true;
+            }
         }
 
-        function handleGlobalMouseMove(e) { 
+        function activateDrag(id, e) {
+            isDragging = true;
+            dragPending = false;
+            const original = document.getElementById(`booking-${id}`);
+            dragGhost = document.getElementById('dragGhost');
+            dragGhost.innerHTML = original.innerHTML;
+            dragGhost.className = original.className + " dragging";
+            dragGhost.style.width = original.offsetWidth + "px";
+            dragGhost.style.height = original.offsetHeight + "px";
+            dragGhost.style.display = 'block';
+            original.classList.add('opacity-50');
+            updateGhostPos(e);
+        }
+
+        function handleGlobalMouseMove(e) {
+            if (dragPending && dragStartPos) {
+                const dist = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y);
+                if (dist >= DRAG_THRESHOLD) {
+                    activateDrag(draggedId, e);
+                }
+                return;
+            }
             if (isDragging) { e.preventDefault(); updateGhostPos(e); return; }
-            // Bei der Maus-Auswahl nutzen wir die onmouseenter-Events der Slots, 
-            // aber zur Sicherheit prüfen wir hier auch den Element-Durchgriff.
             if (isSelecting) {
                 const el = document.elementFromPoint(e.clientX, e.clientY);
                 const slot = el ? el.closest('.calendar-slot') : null;
@@ -441,12 +531,20 @@
             }
         }
 
-        function handleGlobalMouseUp(e) { 
-            if (isDragging) { 
-                const dropEl = document.elementFromPoint(e.clientX, e.clientY); 
-                const slot = dropEl ? dropEl.closest('.calendar-slot') : null; 
-                if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index)); 
-                cancelDrag(); 
+        function handleGlobalMouseUp(e) {
+            if (dragPending) {
+                // Maus wurde losgelassen ohne genug Bewegung → normaler Klick
+                dragPending = false;
+                dragStartPos = null;
+                if (draggedId) openDetails(draggedId, e);
+                draggedId = null;
+                return;
+            }
+            if (isDragging) {
+                const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+                const slot = dropEl ? dropEl.closest('.calendar-slot') : null;
+                if (slot) finishDrag(slot.dataset.date, parseInt(slot.dataset.index));
+                cancelDrag();
             } else if (isSelecting) {
                 finishSelection();
             }
@@ -466,7 +564,7 @@
             const { error } = await sb.from('bookings').update({ date: newDate, startTime: sTime, endTime: eTime }).eq('id', b.id);
             if (error) alert(error.message); else { await fetchBookings(); renderCalendar(); }
         }
-        function cancelDrag() { isDragging = false; if (dragGhost) dragGhost.style.display = 'none'; if (draggedId) { const el = document.getElementById(`booking-${draggedId}`); if (el) el.classList.remove('opacity-50'); } draggedId = null; }
+        function cancelDrag() { isDragging = false; dragPending = false; dragStartPos = null; justDragged = true; setTimeout(() => justDragged = false, 50); if (dragGhost) dragGhost.style.display = 'none'; if (draggedId) { const el = document.getElementById(`booking-${draggedId}`); if (el) el.classList.remove('opacity-50'); } draggedId = null; }
 
         function openModal(d, s, e, editId = null) {
             document.getElementById('bookingForm').reset(); document.getElementById('editBookingId').value = editId || '';
@@ -484,12 +582,14 @@
             const editId = document.getElementById('editBookingId').value, d = document.getElementById('bookingDate').value, n = document.getElementById('playerName').value, c = document.getElementById('bookingComment').value, pin = document.getElementById('bookingPin').value, s = document.getElementById('startTime').value, en = document.getElementById('endTime').value, p = document.getElementById('isPermanent').checked;
             const day = new Date(d).getDay(); 
             if (bookings.some(b => b.id != editId && (b.date === d || (b.is_permanent && new Date(b.date).getDay() === day)) && (s < b.endTime && en > b.startTime))) { document.getElementById('errorMsg').innerText = "Belegt!"; document.getElementById('errorMsg').classList.remove('hidden'); return; }
-            let res = (editId && editId !== '') ? await sb.from('bookings').update({ name: n, comment: c, pin: pin, is_permanent: p }).eq('id', editId) : await sb.from('bookings').insert([{ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }]);
+            let res = (editId && editId !== '') ? await sb.from('bookings').update({ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }).eq('id', editId) : await sb.from('bookings').insert([{ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }]);
             if (res.error) alert(res.error.message); else { await fetchBookings(); renderCalendar(); closeModal(); }
         }
 
-        function openDetails(id,e) { 
-            e.stopPropagation(); curBookingId = id; const b = bookings.find(x => x.id == id); if (!b) return; 
+        function openDetails(id, e) {
+            if (justDragged) return;
+            if (e && e.stopPropagation) e.stopPropagation();
+            curBookingId = id; const b = bookings.find(x => x.id == id); if (!b) return; 
             document.getElementById('detailName').innerText = b.name; 
             document.getElementById('detailTime').innerText = `${b.startTime}-${b.endTime} Uhr`; 
             document.getElementById('detailDate').innerText = b.is_permanent ? 'Wöchentlicher Dauertermin' : b.date; 
@@ -527,10 +627,22 @@
             const b = bookings.find(x => x.id == curBookingId);
             const start = b.date.replace(/-/g, '') + 'T' + b.startTime.replace(':', '') + '00';
             const end = b.date.replace(/-/g, '') + 'T' + b.endTime.replace(':', '') + '00';
-            const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${start}\nDTEND:${end}\nSUMMARY:Pickleball Stöckelsberg (${b.name})\nDESCRIPTION:${b.comment||''}\nEND:VEVENT\nEND:VCALENDAR`;
+            const ics = [
+                'BEGIN:VCALENDAR',
+                'VERSION:2.0',
+                'PRODID:-//TSV Stöckelsberg//Pickleball Terminplaner//DE',
+                'BEGIN:VEVENT',
+                `DTSTART;TZID=Europe/Berlin:${start}`,
+                `DTEND;TZID=Europe/Berlin:${end}`,
+                `SUMMARY:Pickleball Stöckelsberg (${b.name})`,
+                `DESCRIPTION:${b.comment||''}`,
+                'END:VEVENT',
+                'END:VCALENDAR'
+            ].join('\r\n');
             const blob = new Blob([ics], { type: 'text/calendar' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = url; a.download = `pickleball_${b.date}.ics`; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
     </script>
 </body>
