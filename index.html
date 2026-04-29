@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Pickleball TSV Stöckelsberg</title>
+    <title>TSV Stöckelsberg — Platzbuchung</title>
     <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
@@ -86,7 +86,7 @@
                 <div class="leading-tight">
                     <h1 class="text-sm font-black uppercase tracking-tight text-slate-900">TSV Stöckelsberg</h1>
                     <div class="flex items-center gap-2">
-                        <p class="text-[10px] font-bold text-green-600 uppercase">Pickleball</p>
+                        <p id="currentSportLabel" class="text-[10px] font-bold text-green-600 uppercase">Pickleball</p>
                         <span id="occupancyBadge" class="text-[9px] font-black bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 border border-slate-200 uppercase">Woche: --%</span>
                     </div>
                 </div>
@@ -103,6 +103,10 @@
             </div>
         </div>
     </header>
+
+    <nav class="bg-white border-b border-slate-100 z-40 shadow-sm shrink-0">
+        <div class="max-w-7xl mx-auto flex gap-1 sm:gap-2 px-2 sm:px-4 py-2 overflow-x-auto hide-scrollbar" id="sportTabs"></div>
+    </nav>
 
     <main class="flex-1 overflow-hidden p-2 sm:p-4 flex flex-col max-w-7xl mx-auto w-full text-slate-800">
         <div class="calendar-card flex-1 flex flex-col overflow-hidden border border-slate-200 bg-white">
@@ -206,6 +210,15 @@
         function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 
         const START_HOUR = 8, END_HOUR = 22, SLOT_H = 45, HOUR_H = 90;
+        const SPORTS = [
+            { id: 'pickle' + 'ball', label: 'Pickle' + 'ball', icon: 'ph-tennis-ball', from: 'from-green-500', to: 'to-green-600', text: 'text-green-600', bg: 'bg-green-500' },
+            { id: 'beachvolleyball', label: 'Beachvolleyball', icon: 'ph-volleyball', from: 'from-orange-500', to: 'to-orange-600', text: 'text-orange-600', bg: 'bg-orange-500' },
+            { id: 'boule', label: 'Boule', icon: 'ph-circles-three', from: 'from-stone-500', to: 'to-stone-600', text: 'text-stone-600', bg: 'bg-stone-500' },
+            { id: 'dart', label: 'Dart', icon: 'ph-target', from: 'from-rose-500', to: 'to-rose-600', text: 'text-rose-600', bg: 'bg-rose-500' }
+        ];
+        const sportById = id => SPORTS.find(s => s.id === id) || SPORTS[0];
+        let currentSport = SPORTS[0].id;
+
         let currentDate = new Date(), bookings = [], curBookingId = null;
         let isSelecting = false, selectionStart = null, selectionEnd = null;
         let isDragging = false, draggedId = null, dragGhost = null;
@@ -213,15 +226,51 @@
         let editVerifyPin = null;
 
         document.addEventListener('DOMContentLoaded', async () => {
+            const urlSport = new URLSearchParams(location.search).get('sport');
+            if (urlSport && SPORTS.some(s => s.id === urlSport)) currentSport = urlSport;
+            renderSportTabs();
             renderTimeLabels();
             await fetchBookings();
-            renderCalendar(true); 
+            renderCalendar(true);
             setInterval(updateNowLine, 60000);
             window.addEventListener('mouseup', handleGlobalMouseUp);
             window.addEventListener('mousemove', handleGlobalMouseMove);
             window.addEventListener('touchend', handleTouchEnd);
             window.addEventListener('touchmove', handleTouchMove, { passive: false });
         });
+
+        function renderSportTabs() {
+            const tabs = document.getElementById('sportTabs');
+            tabs.replaceChildren();
+            for (const s of SPORTS) {
+                const active = s.id === currentSport;
+                const btn = document.createElement('button');
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl font-black text-[11px] uppercase whitespace-nowrap active:scale-95 transition ' +
+                    (active ? `${s.bg} text-white shadow-md` : 'bg-slate-100 text-slate-600 hover:bg-slate-200');
+                btn.onclick = () => switchSport(s.id);
+                const icon = document.createElement('i');
+                icon.className = `ph-bold ${s.icon} text-base`;
+                const span = document.createElement('span');
+                span.textContent = s.label;
+                btn.append(icon, span);
+                tabs.appendChild(btn);
+            }
+            const sport = sportById(currentSport);
+            const lbl = document.getElementById('currentSportLabel');
+            lbl.textContent = sport.label;
+            lbl.className = `text-[10px] font-bold uppercase ${sport.text}`;
+        }
+
+        function switchSport(id) {
+            if (id === currentSport) return;
+            currentSport = id;
+            const url = new URL(location.href);
+            url.searchParams.set('sport', id);
+            history.replaceState(null, '', url);
+            renderSportTabs();
+            renderCalendar();
+            updateOccupancy();
+        }
 
         function syncHeader(el) { document.getElementById('daysHeader').scrollLeft = el.scrollLeft; }
 
@@ -324,7 +373,7 @@
             start.setHours(0,0,0,0);
             const end = new Date(start); end.setDate(end.getDate() + 7);
 
-            bookings.forEach(b => {
+            bookings.filter(b => b.sport === currentSport).forEach(b => {
                 const bDate = new Date(b.date);
                 const inWeek = bDate >= start && bDate < end;
                 const permanentMatchesWeek = b.is_permanent && !inWeek;
@@ -340,17 +389,18 @@
         function renderBookings(dStr) {
             const dayIdx = new Date(dStr).getDay();
             const now = new Date();
-            return bookings.filter(b => b.date === dStr || (b.is_permanent && new Date(b.date).getDay() === dayIdx)).map(b => {
+            return bookings.filter(b => b.sport === currentSport && (b.date === dStr || (b.is_permanent && new Date(b.date).getDay() === dayIdx))).map(b => {
                 const top = timeToPos(b.startTime), height = timeToPos(b.endTime) - top;
                 const bEnd = new Date(dStr);
                 const [h,m] = b.endTime.split(':').map(Number);
                 bEnd.setHours(h,m,0,0);
                 const isPast = bEnd < now;
+                const sp = sportById(b.sport);
+                const grad = b.is_permanent ? 'bg-gradient-to-br from-blue-600 to-blue-700' : `bg-gradient-to-br ${sp.from} ${sp.to}`;
 
                 return `<div onmousedown="initDrag(event, '${b.id}')" ontouchstart="initDrag(event, '${b.id}')"
-                         class="absolute left-1 right-1 rounded-xl p-2 text-white shadow-md cursor-pointer pointer-events-auto booking-card 
-                         ${isPast ? 'past-booking' : ''}
-                         ${b.is_permanent?'bg-gradient-to-br from-blue-600 to-blue-700':'bg-gradient-to-br from-green-500 to-green-600'}"
+                         class="absolute left-1 right-1 rounded-xl p-2 text-white shadow-md cursor-pointer pointer-events-auto booking-card
+                         ${isPast ? 'past-booking' : ''} ${grad}"
                          style="top:${top}px;height:${height-2}px" id="booking-${b.id}">
                     <div class="flex justify-between items-start">
                         <p class="text-[8px] font-black uppercase opacity-80 leading-none">${b.startTime}-${b.endTime}</p>
@@ -400,7 +450,7 @@
 
         function getBookingsForDate(date) {
             const dayIdx = new Date(date).getDay();
-            return bookings.filter(b => b.date === date || (b.is_permanent && new Date(b.date).getDay() === dayIdx));
+            return bookings.filter(b => b.sport === currentSport && (b.date === date || (b.is_permanent && new Date(b.date).getDay() === dayIdx)));
         }
 
         function trimSelectionToFree(date, startIdx, endIdx) {
@@ -571,7 +621,7 @@
             const sTime = idxToTime(newIdx), eTime = idxToTime(newIdx + duration);
             if (b.is_permanent && !confirm("Serie verschieben?")) return;
             const day = new Date(newDate).getDay();
-            if (bookings.some(x => x.id != b.id && (x.date === newDate || (x.is_permanent && new Date(x.date).getDay() === day)) && (sTime < x.endTime && eTime > x.startTime))) { alert("Belegt!"); return; }
+            if (bookings.some(x => x.id != b.id && x.sport === b.sport && (x.date === newDate || (x.is_permanent && new Date(x.date).getDay() === day)) && (sTime < x.endTime && eTime > x.startTime))) { alert("Belegt!"); return; }
             try {
                 await api('PATCH', `${API}/${b.id}/move`, { date: newDate, startTime: sTime, endTime: eTime, verify_pin: verifyPin });
                 await fetchBookings(); renderCalendar();
@@ -593,9 +643,11 @@
         async function saveBooking(e) {
             e.preventDefault();
             const editId = document.getElementById('editBookingId').value, d = document.getElementById('bookingDate').value, n = document.getElementById('playerName').value, c = document.getElementById('bookingComment').value, pin = document.getElementById('bookingPin').value, s = document.getElementById('startTime').value, en = document.getElementById('endTime').value, p = document.getElementById('isPermanent').checked;
+            const editing = editId && editId !== '';
+            const sport = editing ? (bookings.find(x => x.id == editId)?.sport || currentSport) : currentSport;
             const day = new Date(d).getDay();
-            if (bookings.some(b => b.id != editId && (b.date === d || (b.is_permanent && new Date(b.date).getDay() === day)) && (s < b.endTime && en > b.startTime))) { document.getElementById('errorMsg').innerText = "Belegt!"; document.getElementById('errorMsg').classList.remove('hidden'); return; }
-            const payload = { name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p };
+            if (bookings.some(b => b.id != editId && b.sport === sport && (b.date === d || (b.is_permanent && new Date(b.date).getDay() === day)) && (s < b.endTime && en > b.startTime))) { document.getElementById('errorMsg').innerText = "Belegt!"; document.getElementById('errorMsg').classList.remove('hidden'); return; }
+            const payload = { name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p, sport };
             try {
                 if (editId && editId !== '') {
                     payload.verify_pin = editVerifyPin;
@@ -653,23 +705,24 @@
 
         function downloadICal() {
             const b = bookings.find(x => x.id == curBookingId);
+            const sport = sportById(b.sport);
             const start = b.date.replace(/-/g, '') + 'T' + b.startTime.replace(':', '') + '00';
             const end = b.date.replace(/-/g, '') + 'T' + b.endTime.replace(':', '') + '00';
             const ics = [
                 'BEGIN:VCALENDAR',
                 'VERSION:2.0',
-                'PRODID:-//TSV Stöckelsberg//Pickleball Terminplaner//DE',
+                `PRODID:-//TSV Stöckelsberg//${sport.label} Terminplaner//DE`,
                 'BEGIN:VEVENT',
                 `DTSTART;TZID=Europe/Berlin:${start}`,
                 `DTEND;TZID=Europe/Berlin:${end}`,
-                `SUMMARY:Pickleball Stöckelsberg (${b.name})`,
+                `SUMMARY:${sport.label} Stöckelsberg (${b.name})`,
                 `DESCRIPTION:${b.comment||''}`,
                 'END:VEVENT',
                 'END:VCALENDAR'
             ].join('\r\n');
             const blob = new Blob([ics], { type: 'text/calendar' });
             const url = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = `pickleball_${b.date}.ics`; a.click();
+            const a = document.createElement('a'); a.href = url; a.download = `${sport.id}_${b.date}.ics`; a.click();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
     </script>

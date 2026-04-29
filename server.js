@@ -5,6 +5,8 @@ const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'bookings.db');
+const SPORTS = ['pickle' + 'ball', 'beachvolleyball', 'boule', 'dart'];
+const DEFAULT_SPORT = SPORTS[0];
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -22,7 +24,15 @@ db.prepare(`
     pin TEXT
   )
 `).run();
+
+// Idempotente Migration: sport-Spalte hinzufuegen falls noch nicht vorhanden
+const cols = db.prepare("PRAGMA table_info(bookings)").all();
+if (!cols.some(c => c.name === 'sport')) {
+  db.prepare(`ALTER TABLE bookings ADD COLUMN sport TEXT NOT NULL DEFAULT '${DEFAULT_SPORT}'`).run();
+}
+
 db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_sport_date ON bookings(sport, date)').run();
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
@@ -39,6 +49,7 @@ function validateBookingInput(b) {
   if (!DATE_RE.test(b.date)) return 'Datum ungültig';
   if (!TIME_RE.test(b.startTime) || !TIME_RE.test(b.endTime)) return 'Zeit ungültig';
   if (b.startTime >= b.endTime) return 'Endzeit muss nach Startzeit liegen';
+  if (b.sport != null && !SPORTS.includes(b.sport)) return 'Sportart ungültig';
   return null;
 }
 
@@ -55,16 +66,17 @@ function publicFields(row) {
     startTime: row.startTime,
     endTime: row.endTime,
     is_permanent: !!row.is_permanent,
-    has_pin: !!row.pin
+    has_pin: !!row.pin,
+    sport: row.sport || DEFAULT_SPORT
   };
 }
 
-function hasConflict(date, startTime, endTime, excludeId) {
+function hasConflict(sport, date, startTime, endTime, excludeId) {
   const dow = dayOfWeek(date);
   const rows = db.prepare(`
     SELECT id, date, startTime, endTime, is_permanent FROM bookings
-    WHERE id IS NOT ?
-  `).all(excludeId ?? -1);
+    WHERE sport = ? AND id IS NOT ?
+  `).all(sport, excludeId ?? -1);
   return rows.some(r => {
     const sameSlot = r.date === date || (r.is_permanent && dayOfWeek(r.date) === dow);
     return sameSlot && startTime < r.endTime && endTime > r.startTime;
@@ -80,12 +92,13 @@ app.post('/api/bookings', (req, res) => {
   const err = validateBookingInput(req.body);
   if (err) return res.status(400).json({ error: err });
   const { name, comment, date, startTime, endTime, is_permanent, pin } = req.body;
-  if (hasConflict(date, startTime, endTime, null)) {
+  const sport = req.body.sport || DEFAULT_SPORT;
+  if (hasConflict(sport, date, startTime, endTime, null)) {
     return res.status(409).json({ error: 'Belegt' });
   }
   const info = db.prepare(`
-    INSERT INTO bookings (name, comment, date, startTime, endTime, is_permanent, pin)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bookings (name, comment, date, startTime, endTime, is_permanent, pin, sport)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     name.trim(),
     comment || null,
@@ -93,7 +106,8 @@ app.post('/api/bookings', (req, res) => {
     startTime,
     endTime,
     is_permanent ? 1 : 0,
-    pin ? String(pin) : null
+    pin ? String(pin) : null,
+    sport
   );
   const row = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json(publicFields(row));
@@ -117,7 +131,8 @@ app.put('/api/bookings/:id', (req, res) => {
   const err = validateBookingInput(req.body);
   if (err) return res.status(400).json({ error: err });
   const { name, comment, date, startTime, endTime, is_permanent, pin } = req.body;
-  if (hasConflict(date, startTime, endTime, id)) {
+  const sport = req.body.sport || row.sport || DEFAULT_SPORT;
+  if (hasConflict(sport, date, startTime, endTime, id)) {
     return res.status(409).json({ error: 'Belegt' });
   }
   // Leeres pin-Feld bei Edit = unveraendert lassen (UX: PIN-Eingabe nicht erzwingen).
@@ -125,7 +140,7 @@ app.put('/api/bookings/:id', (req, res) => {
   const newPin = (pin == null || pin === '') ? row.pin : String(pin);
   db.prepare(`
     UPDATE bookings
-    SET name = ?, comment = ?, date = ?, startTime = ?, endTime = ?, is_permanent = ?, pin = ?
+    SET name = ?, comment = ?, date = ?, startTime = ?, endTime = ?, is_permanent = ?, pin = ?, sport = ?
     WHERE id = ?
   `).run(
     name.trim(),
@@ -135,6 +150,7 @@ app.put('/api/bookings/:id', (req, res) => {
     endTime,
     is_permanent ? 1 : 0,
     newPin,
+    sport,
     id
   );
   const updated = db.prepare('SELECT * FROM bookings WHERE id = ?').get(id);
@@ -153,7 +169,7 @@ app.patch('/api/bookings/:id/move', (req, res) => {
   if (!DATE_RE.test(date) || !TIME_RE.test(startTime) || !TIME_RE.test(endTime) || startTime >= endTime) {
     return res.status(400).json({ error: 'Ungültige Zielzeit' });
   }
-  if (hasConflict(date, startTime, endTime, id)) {
+  if (hasConflict(row.sport || DEFAULT_SPORT, date, startTime, endTime, id)) {
     return res.status(409).json({ error: 'Belegt' });
   }
   db.prepare('UPDATE bookings SET date = ?, startTime = ?, endTime = ? WHERE id = ?')
