@@ -1,21 +1,23 @@
-// Einmaliger Migrations-Script: zieht alle bookings aus Supabase nach SQLite.
-// Nutzung:  node migrate-from-supabase.js [pfad/zu/bookings.db]
-// Default-Pfad: ./data/bookings.db (gleicher wie server.js).
+// Einmaliger Migrations-Script: zieht alle bookings aus Supabase und schreibt sie
+// entweder in eine lokale SQLite-Datei ODER per HTTP-POST an einen laufenden Server.
 //
-// Idempotent: legt Tabelle an falls noetig, ueberspringt Datensaetze, deren
-// (date, startTime, endTime, name) bereits existieren.
+// Modus 1 (SQLite, default):  node migrate-from-supabase.js [pfad/zu/bookings.db]
+// Modus 2 (HTTP):              TARGET_URL=https://app.example.com node migrate-from-supabase.js
+//
+// Idempotent (SQLite-Modus): legt Tabelle an falls noetig, ueberspringt Datensaetze,
+// deren (date, startTime, endTime, name) bereits existieren.
+// Im HTTP-Modus uebernimmt der Server die Konflikt-Erkennung (HTTP 409 wird ignoriert).
 
 const { createClient } = require('@supabase/supabase-js');
-const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sawdwcfaiffvhtvfuotz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_nr2pQCbLb07RkrgJl1Xlag_nf-F_d_U';
+const TARGET_URL = process.env.TARGET_URL;
 const DB_PATH = process.argv[2] || process.env.DB_PATH || path.join(__dirname, 'data', 'bookings.db');
 
 (async () => {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   console.log(`Lade Buchungen aus Supabase ...`);
@@ -29,6 +31,33 @@ const DB_PATH = process.argv[2] || process.env.DB_PATH || path.join(__dirname, '
   }
   console.log(`${data.length} Datensaetze erhalten.`);
 
+  if (TARGET_URL) {
+    let inserted = 0, conflicts = 0, errs = 0;
+    for (const r of data) {
+      const body = {
+        name: r.name,
+        comment: r.comment || '',
+        date: r.date,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        is_permanent: !!r.is_permanent,
+        pin: r.pin || ''
+      };
+      const res = await fetch(`${TARGET_URL.replace(/\/$/, '')}/api/bookings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.status === 201) inserted++;
+      else if (res.status === 409) conflicts++;
+      else { errs++; console.warn(`  ${res.status} fuer ${r.name} ${r.date} ${r.startTime}-${r.endTime}: ${await res.text()}`); }
+    }
+    console.log(`HTTP-Migration fertig: ${inserted} eingefuegt, ${conflicts} Konflikte, ${errs} Fehler.`);
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  const Database = require('better-sqlite3');
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.prepare(`
