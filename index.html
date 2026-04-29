@@ -7,7 +7,6 @@
     <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1"></script>
     <style>
         :root { --primary: #22c55e; --bg: #f8fafc; }
         body { 
@@ -192,9 +191,17 @@
     </div>
 
     <script>
-        const SUPABASE_URL = 'https://sawdwcfaiffvhtvfuotz.supabase.co';
-        const SUPABASE_KEY = 'sb_publishable_nr2pQCbLb07RkrgJl1Xlag_nf-F_d_U';
-        const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        const API = '/api/bookings';
+
+        async function api(method, url, body) {
+            const opts = { method, headers: { 'Content-Type': 'application/json' } };
+            if (body !== undefined) opts.body = JSON.stringify(body);
+            const res = await fetch(url, opts);
+            if (res.status === 204) return null;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            return data;
+        }
 
         function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 
@@ -203,6 +210,7 @@
         let isSelecting = false, selectionStart = null, selectionEnd = null;
         let isDragging = false, draggedId = null, dragGhost = null;
         let tStartPos = null, tTimer = null, justDragged = false;
+        let editVerifyPin = null;
 
         document.addEventListener('DOMContentLoaded', async () => {
             renderTimeLabels();
@@ -218,16 +226,15 @@
         function syncHeader(el) { document.getElementById('daysHeader').scrollLeft = el.scrollLeft; }
 
         async function fetchBookings() {
-            const { data, error } = await sb.from('bookings').select('id,name,comment,date,startTime,endTime,is_permanent,pin');
-            if (error) {
-                console.error('Fehler beim Laden:', error.message);
+            try {
+                bookings = await api('GET', API);
+                updateOccupancy();
+            } catch (e) {
+                console.error('Fehler beim Laden:', e.message);
                 const badge = document.getElementById('occupancyBadge');
                 badge.innerText = 'Offline';
                 badge.classList.add('text-red-500');
-                return;
             }
-            bookings = (data || []).map(b => ({ ...b, has_pin: !!b.pin }));
-            updateOccupancy();
         }
 
         function renderTimeLabels() {
@@ -554,15 +561,21 @@
         
         async function finishDrag(newDate, newIdx) {
             const b = bookings.find(x => x.id == draggedId); if (!b) return;
-            if (b.pin) { const p = prompt("PIN eingeben zum Verschieben:"); if (p !== b.pin) { alert("Falscher PIN!"); return; } }
+            let verifyPin;
+            if (b.has_pin) {
+                verifyPin = prompt("PIN eingeben zum Verschieben:");
+                if (!verifyPin) return;
+            }
             const [h1, m1] = b.startTime.split(':').map(Number), [h2, m2] = b.endTime.split(':').map(Number);
             const duration = ((h2 * 60 + m2) - (h1 * 60 + m1)) / 30;
             const sTime = idxToTime(newIdx), eTime = idxToTime(newIdx + duration);
             if (b.is_permanent && !confirm("Serie verschieben?")) return;
             const day = new Date(newDate).getDay();
             if (bookings.some(x => x.id != b.id && (x.date === newDate || (x.is_permanent && new Date(x.date).getDay() === day)) && (sTime < x.endTime && eTime > x.startTime))) { alert("Belegt!"); return; }
-            const { error } = await sb.from('bookings').update({ date: newDate, startTime: sTime, endTime: eTime }).eq('id', b.id);
-            if (error) alert(error.message); else { await fetchBookings(); renderCalendar(); }
+            try {
+                await api('PATCH', `${API}/${b.id}/move`, { date: newDate, startTime: sTime, endTime: eTime, verify_pin: verifyPin });
+                await fetchBookings(); renderCalendar();
+            } catch (e) { alert(e.message); }
         }
         function cancelDrag() { isDragging = false; dragPending = false; dragStartPos = null; justDragged = true; setTimeout(() => justDragged = false, 50); if (dragGhost) dragGhost.style.display = 'none'; if (draggedId) { const el = document.getElementById(`booking-${draggedId}`); if (el) el.classList.remove('opacity-50'); } draggedId = null; }
 
@@ -578,12 +591,23 @@
         function changeWeek(o) { currentDate.setDate(currentDate.getDate() + (o*7)); renderCalendar(); }
 
         async function saveBooking(e) {
-            e.preventDefault(); 
+            e.preventDefault();
             const editId = document.getElementById('editBookingId').value, d = document.getElementById('bookingDate').value, n = document.getElementById('playerName').value, c = document.getElementById('bookingComment').value, pin = document.getElementById('bookingPin').value, s = document.getElementById('startTime').value, en = document.getElementById('endTime').value, p = document.getElementById('isPermanent').checked;
-            const day = new Date(d).getDay(); 
+            const day = new Date(d).getDay();
             if (bookings.some(b => b.id != editId && (b.date === d || (b.is_permanent && new Date(b.date).getDay() === day)) && (s < b.endTime && en > b.startTime))) { document.getElementById('errorMsg').innerText = "Belegt!"; document.getElementById('errorMsg').classList.remove('hidden'); return; }
-            let res = (editId && editId !== '') ? await sb.from('bookings').update({ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }).eq('id', editId) : await sb.from('bookings').insert([{ name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p }]);
-            if (res.error) alert(res.error.message); else { await fetchBookings(); renderCalendar(); closeModal(); }
+            const payload = { name: n, comment: c, pin: pin, date: d, startTime: s, endTime: en, is_permanent: p };
+            try {
+                if (editId && editId !== '') {
+                    payload.verify_pin = editVerifyPin;
+                    await api('PUT', `${API}/${editId}`, payload);
+                } else {
+                    await api('POST', API, payload);
+                }
+                await fetchBookings(); renderCalendar(); closeModal();
+            } catch (err) {
+                document.getElementById('errorMsg').innerText = err.message;
+                document.getElementById('errorMsg').classList.remove('hidden');
+            }
         }
 
         function openDetails(id, e) {
@@ -595,7 +619,7 @@
             document.getElementById('detailDate').innerText = b.is_permanent ? 'Wöchentlicher Dauertermin' : b.date; 
             const cont = document.getElementById('detailCommentContainer'); 
             if (b.comment) { document.getElementById('detailComment').innerText = b.comment; cont.classList.remove('hidden'); } else cont.classList.add('hidden'); 
-            document.getElementById('pinVerificationSection').classList.toggle('hidden', !b.pin);
+            document.getElementById('pinVerificationSection').classList.toggle('hidden', !b.has_pin);
             document.getElementById('verifyPin').value = '';
             document.getElementById('detailsModal').classList.remove('hidden'); 
         }
@@ -603,24 +627,28 @@
 
         function handleEdit() {
             const b = bookings.find(x => x.id == curBookingId);
-            if (b.pin && document.getElementById('verifyPin').value !== b.pin) { alert("PIN falsch!"); return; }
-            closeDetailsModal(); 
-            setTimeout(() => { 
-                openModal(b.date, b.startTime, b.endTime, b.id); 
-                document.getElementById('playerName').value = b.name; 
-                document.getElementById('bookingComment').value = b.comment || ''; 
-                document.getElementById('bookingPin').value = b.pin || '';
-                document.getElementById('isPermanent').checked = !!b.is_permanent; 
+            editVerifyPin = b.has_pin ? document.getElementById('verifyPin').value : null;
+            if (b.has_pin && !editVerifyPin) { alert("PIN eingeben!"); return; }
+            closeDetailsModal();
+            setTimeout(() => {
+                openModal(b.date, b.startTime, b.endTime, b.id);
+                document.getElementById('playerName').value = b.name;
+                document.getElementById('bookingComment').value = b.comment || '';
+                document.getElementById('bookingPin').value = '';
+                document.getElementById('bookingPin').placeholder = b.has_pin ? 'leer = unverändert' : '1234';
+                document.getElementById('isPermanent').checked = !!b.is_permanent;
             }, 150);
         }
 
         async function handleDelete() {
             const b = bookings.find(x => x.id == curBookingId);
-            if (b.pin && document.getElementById('verifyPin').value !== b.pin) { alert("PIN falsch!"); return; }
-            if (confirm("Löschen?")) { 
-                const { error } = await sb.from('bookings').delete().eq('id', curBookingId); 
-                if (error) alert(error.message); else { await fetchBookings(); renderCalendar(); closeDetailsModal(); } 
-            } 
+            const verifyPin = b.has_pin ? document.getElementById('verifyPin').value : null;
+            if (b.has_pin && !verifyPin) { alert("PIN eingeben!"); return; }
+            if (!confirm("Löschen?")) return;
+            try {
+                await api('DELETE', `${API}/${curBookingId}`, b.has_pin ? { verify_pin: verifyPin } : undefined);
+                await fetchBookings(); renderCalendar(); closeDetailsModal();
+            } catch (e) { alert(e.message); }
         }
 
         function downloadICal() {

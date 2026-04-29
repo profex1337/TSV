@@ -1,0 +1,8 @@
+node_modules
+data
+.git
+.gitignore
+*.md
+*.log
+.env
+migrate-from-supabase.js
