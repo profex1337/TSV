@@ -12,8 +12,12 @@ const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const fs = require('fs');
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sawdwcfaiffvhtvfuotz.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_nr2pQCbLb07RkrgJl1Xlag_nf-F_d_U';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error('Fehler: SUPABASE_URL und SUPABASE_KEY muessen als Umgebungsvariablen gesetzt sein.');
+  process.exit(1);
+}
 const TARGET_URL = process.env.TARGET_URL;
 const DB_PATH = process.argv[2] || process.env.DB_PATH || path.join(__dirname, 'data', 'bookings.db');
 
